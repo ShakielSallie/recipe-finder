@@ -5,9 +5,9 @@ const GROQ_API_KEY = (process.env.GROQ_API_KEY || '').replace(/^﻿/, '').trim()
 const GROQ_MODEL = 'llama-3.1-8b-instant';
 const TAVILY_API_KEY = (process.env.TAVILY_API_KEY || '').replace(/^﻿/, '').trim();
 
-async function groqGenerate(prompt: string): Promise<string> {
-  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function groqGenerate(prompt: string): Promise<string> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -23,10 +23,7 @@ async function groqGenerate(prompt: string): Promise<string> {
     });
 
     if (res.status === 429) {
-      if (attempt < 2) {
-        await delay(1500 * (attempt + 1));
-        continue;
-      }
+      if (attempt < 2) { await delay(2000 * (attempt + 1)); continue; }
       throw new Error('rate_limit');
     }
 
@@ -35,7 +32,6 @@ async function groqGenerate(prompt: string): Promise<string> {
     const data = await res.json();
     return (data.choices[0].message.content as string).trim();
   }
-
   throw new Error('rate_limit');
 }
 
@@ -49,7 +45,7 @@ async function searchTavily(query: string): Promise<SearchResult[]> {
       api_key: TAVILY_API_KEY,
       query: query + ' recipe',
       search_depth: 'basic',
-      max_results: 8,
+      max_results: 5,
     }),
   });
 
@@ -59,7 +55,7 @@ async function searchTavily(query: string): Promise<SearchResult[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data.results ?? []).map((r: any) => ({
     title: r.title ?? '',
-    description: r.content ?? '',
+    description: (r.content ?? '').slice(0, 200),
     url: r.url ?? '',
   }));
 }
@@ -110,25 +106,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1 — refine query with Groq (falls back to original query on rate limit)
-    let refinedQuery = query;
-    try {
-      const prompt =
-        `You are a recipe search assistant. Convert this natural language query into a concise web search query for finding recipes. ` +
-        `Query: "${query}". Return only the search string, nothing else.`;
-      refinedQuery = await groqGenerate(prompt);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
-      if (msg !== 'rate_limit') {
-        return NextResponse.json({ error: `Groq error: ${msg}` }, { status: 503 });
-      }
-      // rate limited — continue with original query
-    }
-
-    // Step 2 — fetch live results from Tavily
+    // Step 1 — search Tavily directly with the user's query (no Groq refinement needed)
     let searchResults: SearchResult[];
     try {
-      searchResults = await searchTavily(refinedQuery);
+      searchResults = await searchTavily(query);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       return NextResponse.json({ error: `Web search failed: ${msg}` }, { status: 502 });
@@ -138,7 +119,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ recipes: [] });
     }
 
-    // Step 3 — extract structured recipes with Groq
+    // Step 2 — extract structured recipes with Groq
     let recipes: Recipe[];
     try {
       recipes = await extractRecipes(searchResults);
@@ -146,12 +127,12 @@ export async function POST(req: NextRequest) {
       const msg = err instanceof Error ? err.message : '';
       if (msg === 'rate_limit') {
         return NextResponse.json(
-          { error: 'Groq is rate limited right now — please wait a few seconds and try again.' },
+          { error: 'Too many requests — please wait a few seconds and try again.' },
           { status: 429 },
         );
       }
       try {
-        recipes = await extractRecipes(searchResults.slice(0, 4));
+        recipes = await extractRecipes(searchResults.slice(0, 3));
       } catch {
         return NextResponse.json(
           { recipes: [], warning: 'Results found but could not extract structured recipe data.' },

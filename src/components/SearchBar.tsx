@@ -88,7 +88,6 @@ export function SearchBar() {
             placeholder="e.g. easy chicken dinner under 30 minutes…"
             className="flex-1 min-w-0 bg-transparent text-base text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 outline-none"
             disabled={loading}
-            autoComplete="off"
             autoCorrect="on"
             autoCapitalize="sentences"
             spellCheck={true}
