@@ -1,36 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Recipe } from '@/types/recipe';
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GROQ_MODEL = 'llama-3.1-8b-instant';
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 
-async function ollamaGenerate(prompt: string, timeoutMs = 60000): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+async function groqGenerate(prompt: string): Promise<string> {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2048,
+    }),
+  });
 
-  try {
-    const res = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
-      signal: controller.signal,
-    });
+  if (!res.ok) throw new Error(`Groq responded with ${res.status}`);
 
-    if (!res.ok) throw new Error(`Ollama responded with ${res.status}`);
-
-    const data = await res.json();
-    return (data.response as string).trim();
-  } finally {
-    clearTimeout(timer);
-  }
+  const data = await res.json();
+  return (data.choices[0].message.content as string).trim();
 }
 
 async function refineQuery(userQuery: string): Promise<string> {
   const prompt =
     `You are a recipe search assistant. Convert this natural language query into a concise web search query for finding recipes. ` +
     `Query: "${userQuery}". Return only the search string, nothing else.`;
-  return ollamaGenerate(prompt, 30000);
+  return groqGenerate(prompt);
 }
 
 type SearchResult = { title: string; description: string; url: string };
@@ -70,10 +69,10 @@ async function extractRecipes(results: SearchResult[]): Promise<Recipe[]> {
     `If ingredients or instructions are not in the snippet, infer reasonable ones from the recipe title. ` +
     `Return ONLY a valid JSON array — no markdown, no explanation.\n\nResults:\n\n${resultsText}`;
 
-  const response = await ollamaGenerate(prompt, 90000);
+  const response = await groqGenerate(prompt);
 
   const jsonMatch = response.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) throw new Error('No JSON array in Ollama response');
+  if (!jsonMatch) throw new Error('No JSON array in Groq response');
 
   const parsed: Recipe[] = JSON.parse(jsonMatch[0]);
   return parsed.filter(
@@ -97,18 +96,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1 — refine query with Ollama
+    if (!GROQ_API_KEY || GROQ_API_KEY === 'your_groq_api_key_here') {
+      return NextResponse.json(
+        { error: 'GROQ_API_KEY is not configured in .env.local' },
+        { status: 500 },
+      );
+    }
+
+    // Step 1 — refine query with Groq
     let refinedQuery: string;
     try {
       refinedQuery = await refineQuery(query);
     } catch {
       return NextResponse.json(
-        { error: 'Could not reach Ollama. Make sure it is running: ollama serve' },
+        { error: 'Could not reach Groq API. Check your GROQ_API_KEY.' },
         { status: 503 },
       );
     }
 
-    // Step 2 — fetch live results from Brave
+    // Step 2 — fetch live results from Tavily
     let searchResults: SearchResult[];
     try {
       searchResults = await searchTavily(refinedQuery);
@@ -121,12 +127,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ recipes: [] });
     }
 
-    // Step 3 — extract structured recipes with Ollama
+    // Step 3 — extract structured recipes with Groq
     let recipes: Recipe[];
     try {
       recipes = await extractRecipes(searchResults);
     } catch {
-      // Retry with fewer results and a stricter prompt
       try {
         recipes = await extractRecipes(searchResults.slice(0, 4));
       } catch {
