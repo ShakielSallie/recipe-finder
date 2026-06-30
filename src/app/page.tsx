@@ -49,7 +49,7 @@ export default function Home() {
         </div>
 
         {/* Search */}
-        <div className="max-w-2xl mx-auto mb-12">
+        <div className="relative max-w-2xl mx-auto mb-12">
           <SearchBar />
         </div>
 
