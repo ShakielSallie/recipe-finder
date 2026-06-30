@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRecipeStore } from '@/store/recipeStore';
 import { useRecipeSearch } from '@/hooks/useRecipeSearch';
+import { autocorrectWord } from '@/lib/corrections';
 
 const STORAGE_KEY = 'recipe-recent-searches';
 const MAX_RECENT = 8;
@@ -60,6 +61,23 @@ export function SearchBar() {
     runSearch(inputValue);
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== ' ') return;
+    const input = e.currentTarget;
+    const cursorPos = input.selectionStart ?? inputValue.length;
+    const before = inputValue.slice(0, cursorPos);
+    const after = inputValue.slice(cursorPos);
+    const words = before.split(' ');
+    const lastWord = words[words.length - 1];
+    if (!lastWord) return;
+    const corrected = autocorrectWord(lastWord);
+    if (corrected && corrected !== lastWord) {
+      e.preventDefault();
+      words[words.length - 1] = corrected;
+      setInputValue(words.join(' ') + ' ' + after);
+    }
+  };
+
   const runSearch = (value: string) => {
     const trimmed = value.trim();
     if (!trimmed || loading) return;
@@ -85,6 +103,7 @@ export function SearchBar() {
             value={inputValue}
             onChange={(e) => { setInputValue(e.target.value); setShowDropdown(true); }}
             onFocus={() => setShowDropdown(true)}
+            onKeyDown={handleKeyDown}
             placeholder="e.g. easy chicken dinner under 30 minutes…"
             className="flex-1 min-w-0 bg-transparent text-base text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 outline-none"
             disabled={loading}
