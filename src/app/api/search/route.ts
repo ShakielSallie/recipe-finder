@@ -3,7 +3,7 @@ import { Recipe } from '@/types/recipe';
 
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || '').replace(/^﻿/, '').trim();
 const GROQ_MODEL = 'llama-3.1-8b-instant';
-const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+const TAVILY_API_KEY = (process.env.TAVILY_API_KEY || '').replace(/^﻿/, '').trim();
 
 async function groqGenerate(prompt: string): Promise<string> {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
