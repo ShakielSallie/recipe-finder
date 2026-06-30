@@ -107,9 +107,10 @@ export async function POST(req: NextRequest) {
     let refinedQuery: string;
     try {
       refinedQuery = await refineQuery(query);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       return NextResponse.json(
-        { error: 'Could not reach Groq API. Check your GROQ_API_KEY.' },
+        { error: `Groq error: ${msg}` },
         { status: 503 },
       );
     }
