@@ -6,30 +6,37 @@ const GROQ_MODEL = 'llama-3.1-8b-instant';
 const TAVILY_API_KEY = (process.env.TAVILY_API_KEY || '').replace(/^﻿/, '').trim();
 
 async function groqGenerate(prompt: string): Promise<string> {
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${GROQ_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2048,
-    }),
-  });
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  if (!res.ok) throw new Error(`Groq responded with ${res.status}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 2048,
+      }),
+    });
 
-  const data = await res.json();
-  return (data.choices[0].message.content as string).trim();
-}
+    if (res.status === 429) {
+      if (attempt < 2) {
+        await delay(1500 * (attempt + 1));
+        continue;
+      }
+      throw new Error('rate_limit');
+    }
 
-async function refineQuery(userQuery: string): Promise<string> {
-  const prompt =
-    `You are a recipe search assistant. Convert this natural language query into a concise web search query for finding recipes. ` +
-    `Query: "${userQuery}". Return only the search string, nothing else.`;
-  return groqGenerate(prompt);
+    if (!res.ok) throw new Error(`Groq responded with ${res.status}`);
+
+    const data = await res.json();
+    return (data.choices[0].message.content as string).trim();
+  }
+
+  throw new Error('rate_limit');
 }
 
 type SearchResult = { title: string; description: string; url: string };
@@ -103,16 +110,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1 — refine query with Groq
-    let refinedQuery: string;
+    // Step 1 — refine query with Groq (falls back to original query on rate limit)
+    let refinedQuery = query;
     try {
-      refinedQuery = await refineQuery(query);
+      const prompt =
+        `You are a recipe search assistant. Convert this natural language query into a concise web search query for finding recipes. ` +
+        `Query: "${query}". Return only the search string, nothing else.`;
+      refinedQuery = await groqGenerate(prompt);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return NextResponse.json(
-        { error: `Groq error: ${msg}` },
-        { status: 503 },
-      );
+      const msg = err instanceof Error ? err.message : '';
+      if (msg !== 'rate_limit') {
+        return NextResponse.json({ error: `Groq error: ${msg}` }, { status: 503 });
+      }
+      // rate limited — continue with original query
     }
 
     // Step 2 — fetch live results from Tavily
@@ -132,7 +142,14 @@ export async function POST(req: NextRequest) {
     let recipes: Recipe[];
     try {
       recipes = await extractRecipes(searchResults);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg === 'rate_limit') {
+        return NextResponse.json(
+          { error: 'Groq is rate limited right now — please wait a few seconds and try again.' },
+          { status: 429 },
+        );
+      }
       try {
         recipes = await extractRecipes(searchResults.slice(0, 4));
       } catch {
